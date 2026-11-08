@@ -33,11 +33,10 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
     process.env.MINIMAX_API_KEY = "test-key";
     process.env.MINIMAX_VOICE_ID = "voice-123";
 
-    // base64 for "audio" bytes: Buffer.from("clip").toString("base64")
-    const audioBase64 = Buffer.from("clip").toString("base64");
+    const audioHex = Buffer.from("clip").toString("hex");
     fetchMock.mockResolvedValueOnce(
       jsonLike({
-        data: { audio: audioBase64, status: 2 },
+        data: { audio: audioHex, status: 2 },
         base_resp: { status_code: 0, status_msg: "" },
       })
     );
@@ -70,7 +69,7 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
 
     fetchMock.mockResolvedValueOnce(
       jsonLike({
-        data: { audio: Buffer.from("ok").toString("base64") },
+        data: { audio: Buffer.from("ok").toString("hex") },
         base_resp: { status_code: 0 },
       })
     );
@@ -91,7 +90,7 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
     process.env.MINIMAX_REGION = "cn_zh";
 
     fetchMock.mockResolvedValueOnce(
-      jsonLike({ data: { audio: Buffer.from("ok").toString("base64") } })
+      jsonLike({ data: { audio: Buffer.from("ok").toString("hex") } })
     );
 
     await synthesizeVoiceReply({ text: "hi", provider: "minimax" });
@@ -105,7 +104,7 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
     process.env.MINIMAX_MODEL_ID = "speech-2.6-turbo";
 
     fetchMock.mockResolvedValueOnce(
-      jsonLike({ data: { audio: Buffer.from("ok").toString("base64") } })
+      jsonLike({ data: { audio: Buffer.from("ok").toString("hex") } })
     );
 
     await synthesizeVoiceReply({ text: "hi", provider: "minimax" });
@@ -120,7 +119,7 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
     process.env.MINIMAX_VOICE_ID = "voice-123";
 
     fetchMock.mockResolvedValueOnce(
-      jsonLike({ data: { audio: Buffer.from("ok").toString("base64") } })
+      jsonLike({ data: { audio: Buffer.from("ok").toString("hex") } })
     );
 
     await synthesizeVoiceReply({
@@ -184,7 +183,7 @@ describe("synthesizeVoiceReply — MiniMax provider", () => {
     process.env.MINIMAX_VOICE_ID = "voice-123";
 
     fetchMock.mockResolvedValueOnce(
-      jsonLike({ data: { audio: Buffer.from("ok").toString("base64") } })
+      jsonLike({ data: { audio: Buffer.from("ok").toString("hex") } })
     );
 
     await synthesizeVoiceReply({ text: "hi", provider: "minimax", speed: 5 });

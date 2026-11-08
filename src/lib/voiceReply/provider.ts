@@ -159,7 +159,7 @@ const synthesizeWithMiniMax = async (
     throw new Error(detail || "MiniMax voice synthesis failed.");
   }
 
-  // MiniMax returns a JSON envelope with base64-encoded audio under data.audio
+  // MiniMax returns a JSON envelope with hex-encoded audio under data.audio
   // (and a base_resp status code/message). Parse it into a binary audio
   // response so downstream callers receive the same shape as ElevenLabs.
   const payload = (await response.json().catch(() => null)) as
@@ -169,13 +169,13 @@ const synthesizeWithMiniMax = async (
       }
     | null;
 
-  const audioBase64 = payload?.data?.audio ?? "";
-  if (!audioBase64) {
+  const audioHex = payload?.data?.audio ?? "";
+  if (!audioHex) {
     const statusMsg = payload?.base_resp?.status_msg?.trim();
     throw new Error(statusMsg || "MiniMax voice synthesis returned no audio.");
   }
 
-  const audioBytes = Buffer.from(audioBase64, "base64");
+  const audioBytes = Buffer.from(audioHex, "hex");
   return new Response(new Uint8Array(audioBytes), {
     status: 200,
     headers: {
