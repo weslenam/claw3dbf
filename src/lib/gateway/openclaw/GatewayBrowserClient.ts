@@ -3,6 +3,10 @@
 // (`f9e444dd56ccfc2271e8ae1729b7a14a55e1c11e`).
 // Protocol v4 support (maxProtocol: 4) added 2026-05-17 to match OpenClaw
 // ≥ 2026.3.x which bumped the required gateway protocol version from 3 to 4.
+// Local deviation (2026-11-14): sends `client.buildId: "dev"` for the
+// control-ui client id so OpenClaw ≥ 2026.9 gateways exempt the connection
+// from the control-ui build-parity check, and retries once without `buildId`
+// for older gateways that reject unknown `client` properties.
 // Update this file via `npm run sync:gateway-client -- /path/to/gateway.ts` and record
 // provenance changes in `THIRD_PARTY_CODE.md` whenever the upstream source changes.
 import { getPublicKeyAsync, signAsync, utils } from "@noble/ed25519";
@@ -404,6 +408,22 @@ export type GatewayBrowserClientOptions = {
 const CONNECT_FAILED_CLOSE_CODE = 4008;
 const WS_CLOSE_REASON_MAX_BYTES = 123;
 
+// Gateways older than OpenClaw 2026.8 validate the connect `client` object
+// strictly and have no `buildId` field, so they reject it as an unknown
+// property ("invalid connect params ... buildId"). Their error names the
+// offending property, so matching on `buildId` is how we decide when to
+// retry the connect without it.
+function isBuildIdRejection(err: unknown): boolean {
+  if (!(err instanceof GatewayResponseError)) return false;
+  const details =
+    typeof err.details === "string"
+      ? err.details
+      : err.details == null
+        ? ""
+        : JSON.stringify(err.details);
+  return `${err.message}\n${details}`.toLowerCase().includes("buildid");
+}
+
 function truncateWsCloseReason(reason: string, maxBytes = WS_CLOSE_REASON_MAX_BYTES): string {
   const trimmed = reason.trim();
   if (!trimmed) return "connect failed";
@@ -427,6 +447,7 @@ export class GatewayBrowserClient {
   private connectNonce: string | null = null;
   private connectSent = false;
   private connectTimer: number | null = null;
+  private buildIdRejected = false;
   private backoffMs = 800;
 
   constructor(private opts: GatewayBrowserClientOptions) {}
@@ -566,16 +587,36 @@ export class GatewayBrowserClient {
         nonce,
       };
     }
+    const clientName = this.opts.clientName ?? GATEWAY_CLIENT_NAMES.CONTROL_UI;
+    const client: {
+      id: string;
+      version: string;
+      platform: string;
+      mode: string;
+      instanceId: string | undefined;
+      buildId?: string;
+    } = {
+      id: clientName,
+      version: this.opts.clientVersion ?? "dev",
+      platform: this.opts.platform ?? navigator.platform ?? "web",
+      mode: effectiveMode,
+      instanceId: this.opts.instanceId,
+    };
+    // Claw3D presents as the CONTROL_UI client id for local gateways (see
+    // resolveGatewayClientName) but is never the gateway's own bundled build,
+    // so it can never satisfy the gateway's control-ui build-parity check.
+    // "dev" is the gateway's documented sentinel for unbundled/dev UI builds;
+    // sending it deliberately skips the stale-UI check instead of failing it.
+    // Only the CONTROL_UI client id is gated on build parity, so other client
+    // ids must not send the field. Gateways that reject it as an unknown
+    // property fall back below.
+    if (clientName === GATEWAY_CLIENT_NAMES.CONTROL_UI && !this.buildIdRejected) {
+      client.buildId = "dev";
+    }
     const params = {
       minProtocol: 3,
       maxProtocol: 4,
-      client: {
-        id: this.opts.clientName ?? GATEWAY_CLIENT_NAMES.CONTROL_UI,
-        version: this.opts.clientVersion ?? "dev",
-        platform: this.opts.platform ?? navigator.platform ?? "web",
-        mode: effectiveMode,
-        instanceId: this.opts.instanceId,
-      },
+      client,
       role,
       scopes,
       device,
@@ -588,47 +629,78 @@ export class GatewayBrowserClient {
     gatewayBrowserDebugLog("connect-params", {
       clientId: params.client.id,
       clientMode: params.client.mode,
+      hasBuildId: params.client.buildId != null,
       disableDeviceAuth: this.opts.disableDeviceAuth,
       isSecureContext,
       hasToken: Boolean(authToken),
       hasDeviceIdentity: Boolean(deviceIdentity),
     });
 
-    void this.request<GatewayHelloOk>("connect", params)
-      .then((hello) => {
-        gatewayBrowserDebugLog("hello-ok", {
-          protocol: hello?.protocol ?? null,
-          hasAuthToken: Boolean(hello?.auth?.deviceToken),
-        });
-        if (hello?.auth?.deviceToken && deviceIdentity) {
-          storeDeviceAuthToken({
-            deviceId: deviceIdentity.deviceId,
-            role: hello.auth.role ?? role,
-            scope: authScopeKey,
-            token: hello.auth.deviceToken,
-            scopes: hello.auth.scopes ?? [],
-          });
-        }
-        this.backoffMs = 800;
-        this.opts.onHello?.(hello);
-      })
-      .catch((err) => {
-        gatewayBrowserDebugLog("connect-failed", {
-          message: err instanceof Error ? err.message : String(err),
-        });
-        if (canFallbackToShared && deviceIdentity) {
-          clearDeviceAuthToken({ deviceId: deviceIdentity.deviceId, role, scope: authScopeKey });
-        }
-        const rawReason =
-          err instanceof GatewayResponseError
-            ? `connect failed: ${err.code} ${err.message}`
-            : "connect failed";
-        const reason = truncateWsCloseReason(rawReason);
-        if (reason !== rawReason) {
-          console.warn("[gateway] connect close reason truncated to 123 UTF-8 bytes");
-        }
-        this.ws?.close(CONNECT_FAILED_CLOSE_CODE, reason);
+    const finishHello = (hello: GatewayHelloOk) => {
+      gatewayBrowserDebugLog("hello-ok", {
+        protocol: hello?.protocol ?? null,
+        hasAuthToken: Boolean(hello?.auth?.deviceToken),
       });
+      if (hello?.auth?.deviceToken && deviceIdentity) {
+        storeDeviceAuthToken({
+          deviceId: deviceIdentity.deviceId,
+          role: hello.auth.role ?? role,
+          scope: authScopeKey,
+          token: hello.auth.deviceToken,
+          scopes: hello.auth.scopes ?? [],
+        });
+      }
+      this.backoffMs = 800;
+      this.opts.onHello?.(hello);
+    };
+
+    const failConnect = (err: unknown) => {
+      gatewayBrowserDebugLog("connect-failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+      if (canFallbackToShared && deviceIdentity) {
+        clearDeviceAuthToken({ deviceId: deviceIdentity.deviceId, role, scope: authScopeKey });
+      }
+      const rawReason =
+        err instanceof GatewayResponseError
+          ? `connect failed: ${err.code} ${err.message}`
+          : "connect failed";
+      const reason = truncateWsCloseReason(rawReason);
+      if (reason !== rawReason) {
+        console.warn("[gateway] connect close reason truncated to 123 UTF-8 bytes");
+      }
+      this.ws?.close(CONNECT_FAILED_CLOSE_CODE, reason);
+    };
+
+    try {
+      let hello: GatewayHelloOk;
+      try {
+        hello = await this.request<GatewayHelloOk>("connect", params);
+      } catch (err) {
+        // Old gateways (< 2026.8) validate `client` with no extra properties
+        // allowed and reject `buildId` with "invalid connect params". Retry
+        // once without it so those gateways keep working; once rejected, the
+        // sentinel is never sent to this gateway again.
+        if (
+          params.client.buildId === undefined ||
+          !isBuildIdRejection(err) ||
+          this.buildIdRejected
+        ) {
+          throw err;
+        }
+        this.buildIdRejected = true;
+        gatewayBrowserDebugLog("connect:retry-without-buildid");
+        const legacyClient: typeof params.client = { ...params.client };
+        delete legacyClient.buildId;
+        hello = await this.request<GatewayHelloOk>("connect", {
+          ...params,
+          client: legacyClient,
+        });
+      }
+      finishHello(hello);
+    } catch (err) {
+      failConnect(err);
+    }
   }
 
   private handleMessage(raw: string) {
