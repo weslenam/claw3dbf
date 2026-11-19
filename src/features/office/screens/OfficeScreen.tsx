@@ -8,9 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { MessageSquare, ChevronDown, ChevronLeft, ChevronRight, Mic } from "lucide-react";
-import { RetroOffice3D } from "@/features/retro-office/RetroOffice3D";
 import type { OfficeAgent } from "@/features/retro-office/core/types";
 import { RunningAvatarLoader } from "@/features/agents/components/RunningAvatarLoader";
 import { GatewayConnectScreen } from "@/features/agents/components/GatewayConnectScreen";
@@ -21,9 +21,9 @@ import {
   isSameSessionKey,
   parseAgentIdFromSessionKey,
 } from "@/lib/gateway/GatewayClient";
-import { useRuntimeConnection } from "@/lib/runtime/useRuntimeConnection";
+import { type RuntimeConnectionState } from "@/lib/runtime/useRuntimeConnection";
 import {
-  createStudioSettingsCoordinator,
+  type StudioSettingsCoordinator,
   type StudioSettingsLoadOptions,
 } from "@/lib/studio/coordinator";
 import {
@@ -207,6 +207,14 @@ import {
 import { deriveSkillReadinessState } from "@/lib/skills/presentation";
 import type { StandupAgentSnapshot } from "@/lib/office/standup/types";
 import type { SkillStatusEntry } from "@/lib/skills/types";
+
+const RetroOffice3D = dynamic(
+  () =>
+    import("@/features/retro-office/RetroOffice3D").then((mod) => ({
+      default: mod.RetroOffice3D,
+    })),
+  { ssr: false },
+);
 
 const stringToColor = (str: string) => {
   let hash = 0;
@@ -911,10 +919,14 @@ const inferRunningFromAgentSessions = async (params: {
 
 type OfficeScreenProps = {
   showOpenClawConsole?: boolean;
+  settingsCoordinator: StudioSettingsCoordinator;
+  runtime: RuntimeConnectionState;
 };
 
 export function OfficeScreen({
   showOpenClawConsole = true,
+  settingsCoordinator,
+  runtime,
 }: OfficeScreenProps) {
   // Patch Hermes Phase 2: avoid useSearchParams() at component root — it
   // suspends during hydration in Next.js dev mode and keeps the parent
@@ -925,9 +937,6 @@ export function OfficeScreen({
     if (typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("officeDebug") === "1";
   }, []);
-  const [settingsCoordinator] = useState(() =>
-    createStudioSettingsCoordinator(),
-  );
   const {
     client,
     provider,
@@ -949,8 +958,7 @@ export function OfficeScreen({
     setToken,
     setSelectedAdapterType,
     supportsCapability,
-  } =
-    useRuntimeConnection(settingsCoordinator);
+  } = runtime;
   const runtimeSupportsSkills = supportsCapability("skills");
   const runtimeSupportsApprovals = supportsCapability("approvals");
   const runtimeSupportsCron = supportsCapability("cron");
@@ -1204,7 +1212,10 @@ export function OfficeScreen({
     if (!targetSelectedAdapter || !targetGatewayUrl || !targetToken) {
       return;
     }
-    if (status === "connected" || status === "connecting") {
+    if (status === "connecting") {
+      return;
+    }
+    if (status === "connected") {
       const runtimeMatchesTarget =
         activeAdapterType === pendingFloorRuntimeSwitch.adapterType &&
         gatewayUrl.trim() === pendingFloorRuntimeSwitch.gatewayUrl &&
@@ -1270,11 +1281,20 @@ export function OfficeScreen({
   }, [state.agents]);
   useEffect(() => {
     const now = Date.now();
-    setDanceUntilByAgentId((previous) =>
-      Object.fromEntries(
+    setDanceUntilByAgentId((previous) => {
+      const next = Object.fromEntries(
         Object.entries(previous).filter(([, until]) => until > now),
-      ),
-    );
+      );
+      const prevKeys = Object.keys(previous);
+      const nextKeys = Object.keys(next);
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((key) => previous[key] === next[key])
+      ) {
+        return previous;
+      }
+      return next;
+    });
   }, [state.agents]);
   useEffect(() => {
     const pendingTimeouts = pendingJukeboxCommandTimeoutsRef.current;
@@ -2723,13 +2743,16 @@ export function OfficeScreen({
           setAgentsLoaded(true);
         } else {
           setAgentsLoaded(false);
-          hydrateAgents([]);
         }
       }
-      setFeedEvents([]);
-      setDebugRows([]);
-      setRunCountByAgentId({});
-      setLastSeenByAgentId({});
+      setFeedEvents((current) => (current.length === 0 ? current : []));
+      setDebugRows((current) => (current.length === 0 ? current : []));
+      setRunCountByAgentId((current) =>
+        Object.keys(current).length === 0 ? current : {},
+      );
+      setLastSeenByAgentId((current) =>
+        Object.keys(current).length === 0 ? current : {},
+      );
       prevAssistantPreviewRef.current = {};
       lastGatewayActivityAtRef.current = 0;
     }
@@ -2948,12 +2971,13 @@ export function OfficeScreen({
   }, [agentsLoaded, loadAgents, status]);
 
   useEffect(() => {
-    setOfficeTriggerState((previous) =>
-      reconcileOfficeAnimationTriggerState({
+    setOfficeTriggerState((previous) => {
+      const next = reconcileOfficeAnimationTriggerState({
         state: previous,
         agents: state.agents,
-      }),
-    );
+      });
+      return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+    });
   }, [state.agents]);
 
   useEffect(() => {
@@ -3096,6 +3120,7 @@ export function OfficeScreen({
   const standupController = useOfficeStandupController({
     gatewayUrl,
     agents: standupAgentSnapshots,
+    enabled: status === "connected",
   });
   const taskBoard = useTaskBoardController({
     gatewayUrl,
@@ -3142,7 +3167,7 @@ export function OfficeScreen({
     enabled: runtimeSupportsSkills,
     agents: state.agents,
   });
-  const animationNowMs = Date.now();
+  const animationNowMs = useMemo(() => Date.now(), [clockTick]);
   const officeAnimationState = useMemo(() => {
     const base = buildOfficeAnimationState({
       state: officeTriggerState,
@@ -4718,6 +4743,7 @@ export function OfficeScreen({
         activeAdapterType={(selectedAdapterType as FloorProvider) ?? null}
       />
       <section className="relative h-full min-h-0 min-w-0 overflow-hidden">
+        {status === "connected" ? (
         <RetroOffice3D
           key={activeFloor.id}
           agents={allVisibleAgents}
@@ -4865,6 +4891,7 @@ export function OfficeScreen({
             void taskBoard.refreshCronJobs();
           }}
         />
+        ) : null}
         {jukeboxOpen ? (
           soundclawReady ? (
             <JukeboxPanel
