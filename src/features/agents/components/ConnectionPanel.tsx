@@ -41,6 +41,7 @@ export const ConnectionPanel = ({
     selectedAdapterType === "demo" ||
     selectedAdapterType === "local" ||
     selectedAdapterType === "claw3d" ||
+    selectedAdapterType === "orcarouter" ||
     selectedAdapterType === "custom";
   const applyDemoPreset = () => {
     onAdapterTypeChange("demo");
@@ -50,6 +51,9 @@ export const ConnectionPanel = ({
   };
   const applyCustomPreset = () => {
     onAdapterTypeChange("custom");
+  };
+  const applyOrcaRouterPreset = () => {
+    onAdapterTypeChange("orcarouter");
   };
   const applyLocalPreset = () => {
     onAdapterTypeChange("local");
@@ -71,7 +75,9 @@ export const ConnectionPanel = ({
             ? "Claw3D runtime keeps Claw3D transcript semantics over direct HTTP."
             : selectedAdapterType === "local"
               ? "Local runtime expects a direct orchestrator boundary."
-              : "Custom is a generic runtime endpoint, not a provider-native adapter.";
+              : selectedAdapterType === "orcarouter"
+                ? "OrcaRouter is a provider-native OpenAI-compatible gateway that routes many models behind one endpoint."
+                : "Custom is a generic runtime endpoint, not a provider-native adapter.";
 
   return (
     <div className="fade-up-delay flex flex-col gap-3">
@@ -165,6 +171,13 @@ export const ConnectionPanel = ({
           onClick={applyClaw3dPreset}
         >
           Claw3D runtime
+        </button>
+        <button
+          className="ui-btn-secondary px-3 py-1.5 text-[11px] font-semibold tracking-[0.05em]"
+          type="button"
+          onClick={applyOrcaRouterPreset}
+        >
+          OrcaRouter backend
         </button>
         <button
           className="ui-btn-secondary px-3 py-1.5 text-[11px] font-semibold tracking-[0.05em]"
